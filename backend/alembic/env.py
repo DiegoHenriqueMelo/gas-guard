@@ -9,11 +9,16 @@ from alembic import context
 import sys
 from pathlib import Path
 
-# permite "from database import ..." ao rodar alembic de dentro de backend/
+# poe backend/ no sys.path para o pacote app ser importavel
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from database import Base, DATABASE_URL
-import models  # noqa: F401  <- NAO remova: e o import que popula Base.metadata
+from app.core.database import Base, DATABASE_URL
+
+# NAO remova estes imports: sao eles que populam Base.metadata.
+# Todo model novo precisa entrar aqui, senao o autogenerate nao enxerga
+# a tabela e gera um DROP TABLE na migration.
+from app.ambientes.models import Ambiente  # noqa: F401
+from app.dispositivos.models import Dispositivo  # noqa: F401
 # ---------------------------------------------------------------------
 
 # this is the Alembic Config object, which provides

@@ -1,12 +1,12 @@
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-import os
 
-# o .env fica na raiz do projeto, um nivel acima de backend/
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# o .env fica na raiz do projeto, quatro niveis acima deste arquivo
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -21,7 +21,6 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
 class Base(DeclarativeBase):
     """Classe-mae de todos os models. O Alembic descobre as tabelas por ela."""
-    pass
 
 
 def get_db():
