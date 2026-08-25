@@ -4,3 +4,9 @@ class CodigoJaCadastrado(Exception):
 
 class AmbienteNaoEncontrado(Exception):
     pass
+
+class DispositivoNaoEncontrado(Exception):
+    pass
+
+class NomeJaCadastrado(Exception):
+    pass
