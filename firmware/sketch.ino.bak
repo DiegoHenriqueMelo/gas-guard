@@ -1,0 +1,37 @@
+const int pinoSensor = 34; // Pino onde ligou o A0 do sensor
+const int pinoLed = 2;     // Pino onde ligou o LED
+const int pinoBuzzer = 4;  // Pino onde ligou o Buzzer
+
+const int limiteGas = 1500; // Limiar de disparo (escala 0 a 4095)
+
+void setup() {
+  pinMode(pinoLed, OUTPUT);
+  Serial.begin(115200);
+
+  // Configura a geracao de som no pino do buzzer no ESP32
+  ledcAttachChannel(pinoBuzzer, 1000, 8, 0);
+}
+
+void loop() {
+  int gas = analogRead(pinoSensor);
+
+  Serial.print("Nivel do Gas: ");
+  Serial.println(gas);
+
+  if (gas > limiteGas) {
+    // Alarme: LED acende e Buzzer apita a 1000 Hz
+    digitalWrite(pinoLed, HIGH);
+    ledcWriteTone(pinoBuzzer, 1000);
+    delay(150);
+
+    // Pausa: LED apaga e Buzzer silencia
+    digitalWrite(pinoLed, LOW);
+    ledcWriteTone(pinoBuzzer, 0);
+    delay(150);
+  } else {
+    // Seguro: Tudo desligado
+    digitalWrite(pinoLed, LOW);
+    ledcWriteTone(pinoBuzzer, 0);
+    delay(200);
+  }
+}
