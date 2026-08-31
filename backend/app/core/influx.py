@@ -25,18 +25,18 @@ client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = client.write_api(write_options=SYNCHRONOUS)
 query_api = client.query_api()
 
-def gravar_leitura(device_id:str, ppm:float):
-    point = Point(MEASUREMENT).tag("device_id", device_id).field("ppm", float(ppm))
+def gravar_leitura(codigo: str, ppm: float):
+    point = Point(MEASUREMENT).tag("codigo", codigo).field("ppm", float(ppm))
     write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=  point)
 
 
-def ler_ultimas_leituras(device_id: str, minutos: int = 60) -> list[tuple]:
+def ler_ultimas_leituras(codigo: str, minutos: int = 60) -> list[tuple]:
     """Devolve [(horario, ppm), ...] das ultimas N leituras de um dispositivo."""
     consulta = f'''
     from(bucket: "{INFLUX_BUCKET}")
       |> range(start: -{minutos}m)
       |> filter(fn: (r) => r._measurement == "{MEASUREMENT}")
-      |> filter(fn: (r) => r.device_id == "{device_id}")
+      |> filter(fn: (r) => r.codigo == "{codigo}")
     '''
 
     tabelas = query_api.query(consulta, org=INFLUX_ORG)
