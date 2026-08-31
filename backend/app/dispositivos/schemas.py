@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -7,14 +9,18 @@ class DispositivoRead(BaseModel):
     nome: str
     ativo: bool
     ambiente_id: int
+    ultimo_contato: datetime | None
+    criado_em: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class DispositivoCreate(BaseModel):
     codigo: str
     nome: str
     ambiente_id: int
-    
+
+
 class DispositivoUpdate(BaseModel):
     nome: str | None = None
     ativo: bool | None = None
