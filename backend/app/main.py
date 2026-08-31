@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.dispositivos.router import router as dispositivos_router
+from app.ambientes.router import router as ambientes_router
 from app.mqtt.subscriber import criar_client
 
 
@@ -21,3 +22,4 @@ def home():
 
 
 app.include_router(dispositivos_router)
+app.include_router(ambientes_router)

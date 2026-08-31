@@ -1,0 +1,2 @@
+class NomeJaCadastrado(Exception):
+    pass
