@@ -3,9 +3,10 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
+from pydantic import ValidationError
+
 from app.leituras.schemas import LeituraIn
 from app.leituras.service import processar_leitura
-from pydantic import ValidationError
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
@@ -39,7 +40,16 @@ def criar_client() -> mqtt.Client:
     client.on_connect = on_connect
     client.on_message = on_message
 
-    client.connect(MQTT_HOST, MQTT_PORT)
+    # Backoff das retentativas: espera de 1s ate 30s.
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+    # connect_async, e nao connect: nao tenta a conexao agora, apenas guarda
+    # o destino. Quem conecta - e reconecta sozinho - e a thread do loop.
+    # No docker compose o backend pode subir antes de o Mosquitto aceitar
+    # conexao; com connect() isso levantaria ConnectionRefusedError dentro
+    # do lifespan e o container cairia em loop de restart.
+    client.connect_async(MQTT_HOST, MQTT_PORT)
+
     return client
 
 
