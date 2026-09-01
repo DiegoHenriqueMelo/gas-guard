@@ -41,7 +41,7 @@ def nome_valido(db: Session, nome:str)->Dispositivo | None:
     return db.scalars(query).first()
 
 def excluir_dispositivo(dispositivo:Dispositivo, codigo:str, db:Session)->Dispositivo:
-    setattr(dispositivo, "ativo",False )
+    dispositivo.ativo = False
     
     db.commit()
     return dispositivo
