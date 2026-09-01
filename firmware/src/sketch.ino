@@ -9,8 +9,8 @@ const int   WIFI_CANAL = 6;  // sem isto o Wokwi varre todos os canais e demora
 // ---------- broker MQTT ----------
 // TROQUE ESTAS DUAS LINHAS a cada tunel novo do pinggy.
 // Host SEM "tcp://" e SEM a porta colada. Porta e numero, sem aspas.
-const char* MQTT_HOST  = "dcetj-2804-7f0-b769-ec4f-e124-5e80-8765-2795.run.pinggy-free.link";
-const int   MQTT_PORTA = 38881;
+const char* MQTT_HOST  = "yxrda-187-72-143-220.run.pinggy-free.link";
+const int   MQTT_PORTA = 44255;
 
 // ---------- identidade deste dispositivo ----------
 // Precisa existir na coluna "codigo" da tabela dispositivos.
@@ -22,9 +22,22 @@ const int pinoSensor = 34;  // ADC1: continua funcionando com o WiFi ligado
 const int pinoLed    = 2;
 const int pinoBuzzer = 4;
 
-// ---------- limiar local ----------
-// Faz o alarme fisico tocar mesmo sem rede. O backend tem o seu proprio.
-const int limiteGas = 1500;  // escala 0 a 4095
+// ---------- conversao ADC -> ppm ----------
+// A peca "gas-sensor" do Wokwi entrega tensao LINEAR: ela nao modela a
+// curva Rs/R0 logaritmica de um MQ-2 de verdade. Entao esta conversao e
+// uma APROXIMACAO LINEAR sobre a faixa de deteccao do MQ-2 (200 a 10000
+// ppm). Num sensor fisico seria preciso calibrar o R0 em ar limpo e
+// aplicar a curva do datasheet. A formula esta documentada no README.
+const float PPM_MINIMO = 200.0;
+const float PPM_MAXIMO = 10000.0;
+const int   ADC_MAXIMO = 4095;   // ADC de 12 bits do ESP32
+
+// ---------- limiar local, em ppm ----------
+// Faz o alarme fisico tocar mesmo sem rede. O GLP tem limite inferior de
+// explosividade (LEL) perto de 19000 ppm; 2000 ppm e cerca de 10% disso,
+// que e onde a pratica manda alarmar. O mesmo numero esta no frontend,
+// em LIMITE_CRITICO.
+const float LIMITE_PPM = 2000.0;
 
 // ---------- os quatro ritmos, em milissegundos ----------
 const unsigned long INTERVALO_PISCA      = 150;
@@ -44,6 +57,11 @@ bool ledAceso = false;
 // E essa separacao que permite trocar por TLS depois sem mudar o resto.
 WiFiClient rede;
 PubSubClient mqtt(rede);
+
+// Converte a leitura crua do ADC para partes por milhao.
+float ppmDeAdc(int adc) {
+  return PPM_MINIMO + ((float)adc / ADC_MAXIMO) * (PPM_MAXIMO - PPM_MINIMO);
+}
 
 void conectarWiFi() {
   Serial.print("WiFi: conectando");
@@ -109,8 +127,9 @@ void loop() {
   mqtt.loop();
 
   // Sem timer: ler e decidir toda volta, pro alarme reagir na hora.
-  int gas = analogRead(pinoSensor);
-  bool emAlarme = (gas > limiteGas);
+  int   gasBruto = analogRead(pinoSensor);
+  float ppm      = ppmDeAdc(gasBruto);
+  bool  emAlarme = (ppm > LIMITE_PPM);
 
   // ---------- ritmo 1: piscar enquanto houver alarme ----------
   if (emAlarme) {
@@ -131,8 +150,11 @@ void loop() {
   // ---------- ritmo 2: imprimir no Serial ----------
   if (agora - ultimoSerial >= INTERVALO_SERIAL) {
     ultimoSerial = agora;
-    Serial.print("Nivel do Gas: ");
-    Serial.print(gas);
+    Serial.print("Gas: ");
+    Serial.print(ppm, 0);
+    Serial.print(" ppm (ADC ");
+    Serial.print(gasBruto);
+    Serial.print(")");
     Serial.println(emAlarme ? "  [ALARME]" : "");
   }
 
@@ -145,7 +167,7 @@ void loop() {
       // e o dispositivo trava depois de horas rodando.
       char payload[64];
       snprintf(payload, sizeof(payload),
-               "{\"codigo\":\"%s\",\"ppm\":%d}", CODIGO, gas);
+               "{\"codigo\":\"%s\",\"ppm\":%.1f}", CODIGO, ppm);
 
       // publish devolve bool. Sem conferir, mensagem sumida vira
       // meia hora de investigacao.
