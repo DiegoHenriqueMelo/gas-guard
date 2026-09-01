@@ -46,6 +46,52 @@ services:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
 
+  backend:
+    build: ./backend
+    container_name: gasguard-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      # o container roda `alembic upgrade head` antes de servir, entao o
+      # Postgres precisa estar ACEITANDO CONEXAO, nao apenas iniciado.
+      postgres:
+        condition: service_healthy
+      influx:
+        condition: service_started
+      mosquitto:
+        condition: service_started
+    environment:
+      # Dentro da rede do compose, "localhost" e o proprio container.
+      # Os enderecos viram os NOMES DOS SERVICOS acima. Estes valores
+      # sobrescrevem os do .env, que servem para rodar na maquina host
+      # (o load_dotenv nao sobrepoe variavel que ja existe no ambiente).
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      INFLUX_URL: http://influx:8086
+      INFLUX_TOKEN: ${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUX_ORG: ${DOCKER_INFLUXDB_INIT_ORG}
+      INFLUX_BUCKET: ${DOCKER_INFLUXDB_INIT_BUCKET}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_TOPIC: gasguard/+/leitura
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Embutido no bundle em tempo de build. E o navegador do usuario que
+        # chama a API, e ele esta FORA da rede do compose - por isso a porta
+        # publicada do host, e nao "http://backend:8000".
+        VITE_API_URL: http://localhost:8000
+    container_name: gasguard-frontend
+    restart: unless-stopped
+    ports:
+      # 5173 no host de proposito: e a origem ja liberada no CORSMiddleware
+      # do backend. Dentro do container o nginx escuta na 80.
+      - "5173:80"
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   influx_data:
