@@ -48,7 +48,7 @@ $RECYCLE.BIN/
 *.p12
 secrets.json
 credentials.json
-
+COMANDS.MD
 
 # ==============================================================================
 # BACKEND — PYTHON
