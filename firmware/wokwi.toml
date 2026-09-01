@@ -1,0 +1,9 @@
+[wokwi]
+version = 1
+
+# "build" e uma juncao (mklink /J) apontando para C:\pio-build\gasguard\esp32dev.
+# O PlatformIO precisa gerar o binario num caminho 100% ASCII (o toolchain
+# xtensa nao escreve em caminhos com "3o ano"), mas a extensao do Wokwi
+# exige o arquivo dentro do workspace. A juncao satisfaz os dois.
+firmware = "build/firmware.bin"
+elf = "build/firmware.elf"

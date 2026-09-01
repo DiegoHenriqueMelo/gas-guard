@@ -1,0 +1,14 @@
+# Depends(), Query(), Path()... no default de parametro sao o idioma do FastAPI.
+# A regra B008 do bugbear proibe chamada de funcao em default por causa de
+# valores mutaveis compartilhados - o que nao se aplica a esses casos.
+[lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.File",
+    "fastapi.Form",
+]
