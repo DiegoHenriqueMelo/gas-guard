@@ -49,6 +49,8 @@ $RECYCLE.BIN/
 secrets.json
 credentials.json
 COMANDS.MD
+# gerados por scripts/gerar_segredos.py (hashes, senhas da demo)
+secrets/
 
 # ==============================================================================
 # BACKEND — PYTHON
