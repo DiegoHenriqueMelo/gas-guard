@@ -1,238 +1,292 @@
 # Arquitetura
 
-## Visao geral
+O diagrama geral está no [README](../README.md#arquitetura). Aqui fica o
+porquê de cada peça e as decisões que valem ser defendidas na apresentação.
 
-![Diagrama de arquitetura do Gas-Guard](ARCHITECTURE.png)
+## Princípio: todo dado passa pelo RabbitMQ
 
-O tracejado azul delimita o que roda em Docker. Fora dele fica so o ESP32,
-que e simulado no Wokwi (nuvem) e alcanca o broker por um tunel TCP.
+Nenhum serviço chama outro diretamente. O simulador não conhece a API, a cena
+3D não conhece o simulador, a IA não conhece o painel. Cada um publica num
+barramento e consome dele. Consequências:
 
-Repare nas duas relacoes que o desenho destaca: um ambiente contem N
-dispositivos, e nenhum dispositivo pode ser criado sem um ambiente; e o
-coringa `+` do topico, que aceita qualquer codigo de dispositivo naquele
-nivel.
+- dá para **parar um consumidor** (`docker compose stop gravador`) sem perder
+  nada: as mensagens esperam na fila durável e são gravadas quando ele volta;
+- um serviço novo (outra IA, um exportador) só precisa de uma fila nova
+  ligada na exchange, sem mexer em quem já existe;
+- a IA fica **entre** a telemetria e a interface: o painel só sabe da saúde do
+  exaustor pelo que a inferência publica.
 
-Dois pontos em que o desenho e o codigo divergem hoje:
+## Dois brokers, dois papéis
 
-- o painel busca o historico por **HTTP com polling de 5s**, nao por
-  WebSocket. Comunicacao bidirecional e item do 2o bimestre;
-- o tunel e feito por **SSH via pinggy**, nao por ngrok - o binario do ngrok
-  e bloqueado pelo Smart App Control nesta maquina.
+| | Mosquitto (MQTT) | RabbitMQ (AMQP) |
+| --- | --- | --- |
+| Onde | borda: dispositivo ↔ aplicação | interno: serviço ↔ serviço |
+| Por quê | leve, feito para dispositivo pequeno em rede ruim | filas duráveis, vários consumidores por mensagem, roteamento por padrão, ack, DLQ |
+| Quem fala | `simulador`, `gateway` | `gateway`, `api`, `gravador`, `regras`, `inferencia`, `lab` |
 
-## Fluxo obrigatorio da 1a etapa
+O `gateway` é o único que fala os dois. Ele valida o payload, confere o
+código no cadastro (para não criar série nova no InfluxDB a cada código
+inventado), carimba o horário e republica.
 
-```
-Sensor  ->  MQTT  ->  Mosquitto  ->  Python  ->  InfluxDB  ->  Web
-  OK        OK          OK           OK          OK          OK
-```
+## O envelope
 
-O ESP32 publica em `gasguard/<codigo>/leitura` a cada 3s, com payload
-`{"codigo":"...","ppm":1834.0}`. O Mosquitto recebe. O backend assina
-`gasguard/+/leitura` numa thread de fundo, valida o payload com Pydantic,
-confere o codigo contra o Postgres e grava a leitura no InfluxDB. O Vue
-consome o historico por HTTP e desenha grafico e indicador.
+Toda mensagem no RabbitMQ tem o mesmo formato (`backend/app/mensageria/envelope.py`):
 
-Contrato de mensagem: o horario NAO vai no payload, quem carimba e o
-InfluxDB na gravacao. A tag do Influx e `codigo`, igual a coluna do
-Postgres e ao nivel do meio do topico.
-
-## As duas portas de entrada
-
-O ponto arquitetural que define o projeto: a aplicacao recebe dados por
-**duas portas** sobre o mesmo dominio.
-
-```
-HTTP  (FastAPI)  ->  router  -\
-                               >-  service  ->  repository  ->  banco
-MQTT  (paho)     ->  callback -/
+```json
+{
+  "id": "6f1c0b9e...",
+  "instante": "2026-11-16T19:02:11.483Z",
+  "tipo": "telemetria",
+  "dispositivo": "GAS-01",
+  "conteudo": { "zona": "cozinha", "tipo": "gas", "leituras": { "ppm": 312.5 }, "estado": null }
+}
 ```
 
-Por isso a regra de negocio nao pode morar no router. O callback do MQTT
-chama `leituras/service.processar_leitura()`, o mesmo lugar onde um
-endpoint HTTP chamaria.
+Tipos: `telemetria`, `comando`, `insight`, `alerta`, `acionamento`, `job`,
+`progresso`, `modelo`. Mensagem que não valida vira `MensagemInvalida` e vai
+direto para a DLQ.
 
-Consequencia pratica: o callback roda na thread do paho, fora de qualquer
-request. O `get_db()` do FastAPI e uma dependency e so funciona dentro de
-uma request; por isso `processar_leitura()` abre a sessao na mao com
-`SessionLocal()`, uma por mensagem. Sessao do SQLAlchemy nao e thread-safe
-e nao pode ser compartilhada entre as duas portas.
+## Topologia do RabbitMQ
 
-## Estrutura
+Declarada em `infra/rabbitmq/topologia.json` e carregada pelo broker ao subir.
+Os serviços **não declaram nada**: os usuários deles não têm permissão de
+`configure`.
 
-```
-gas-guard
- |- backend
- |   |- alembic
- |   |   |- versions
- |   |   |   \- 21bda3d0d359_cria_ambientes_e_dispositivos.py
- |   |   |- env.py
- |   |   |- README
- |   |   \- script.py.mako
- |   |- app
- |   |   |- ambientes            CRUD completo, em camadas
- |   |   |   |- __init__.py
- |   |   |   |- exceptions.py
- |   |   |   |- models.py
- |   |   |   |- repository.py
- |   |   |   |- router.py
- |   |   |   |- schemas.py
- |   |   |   \- service.py
- |   |   |- core
- |   |   |   |- __init__.py
- |   |   |   |- database.py      SQLAlchemy + sessao por request
- |   |   |   \- influx.py        gravar_leitura() / ler_ultimas_leituras()
- |   |   |- dispositivos         CRUD completo, em camadas
- |   |   |   |- __init__.py
- |   |   |   |- exceptions.py
- |   |   |   |- models.py
- |   |   |   |- repository.py
- |   |   |   |- router.py
- |   |   |   |- schemas.py
- |   |   |   \- service.py
- |   |   |- leituras             serie temporal
- |   |   |   |- __init__.py
- |   |   |   |- repository.py    traduz as tuplas do Influx
- |   |   |   |- router.py        GET /api/leituras/{codigo}
- |   |   |   |- schemas.py       LeituraIn (MQTT) e LeituraOut (API)
- |   |   |   \- service.py       processar_leitura() e listar_historico()
- |   |   |- mqtt
- |   |   |   |- __init__.py
- |   |   |   \- subscriber.py    cliente paho, callbacks, criar_client()
- |   |   |- __init__.py
- |   |   \- main.py              FastAPI, CORS, lifespan do subscriber
- |   |- alembic.ini
- |   |- .dockerignore
- |   |- Dockerfile           python:3.13-slim, migra e serve
- |   |- requirements.txt
- |   \- ruff.toml
- |- docs
- |   |- ARCHITECTURE.MD
- |   |- ARCHITECTURE.png
- |   |- COMANDS.MD               comando do tunel TCP
- |   \- PLAN.MD                  enunciado do professor
- |- firmware                     projeto Wokwi + PlatformIO
- |   |- src
- |   |   \- sketch.ino           ESP32: sensor, ppm, alarme local, publish
- |   |- diagram.json             ESP32 DevKit-C v4, sensor no GPIO 34 (ADC1)
- |   |- libraries.txt            usado pelo wokwi.com
- |   |- platformio.ini           pioarduino (core 3.x) + build_dir ASCII
- |   |- wokwi.toml               aponta para build/ (juncao, nao versionada)
- |   |- sketch.ino.bak           backup pre-millis, pode apagar
- |   \- wokwi-project.txt
- |- frontend                     Vue 3 + TS + Vite
- |   |- public
- |   |   |- favicon.svg
- |   |   \- icons.svg
- |   |- src
- |   |   |- api
- |   |   |   |- client.ts        instancia axios + funcoes tipadas
- |   |   |   \- types.ts         espelho dos schemas + faixas de ppm
- |   |   |- assets
- |   |   |- components
- |   |   |   |- GraficoLeituras.vue    linha de ppm (Chart.js)
- |   |   |   \- IndicadorStatus.vue    faixa atual + resumo do periodo
- |   |   |- router
- |   |   |   \- index.ts
- |   |   |- views
- |   |   |   |- AmbientesView.vue      CRUD de ambientes
- |   |   |   |- DashboardView.vue      painel, polling de 5s
- |   |   |   \- DispositivosView.vue   CRUD de dispositivos
- |   |   |- App.vue
- |   |   |- main.ts
- |   |   |- style.css
- |   |   \- vite-env.d.ts
- |   |- .env / .env.example      VITE_API_URL
- |   |- .dockerignore
- |   |- Dockerfile           multi-stage: node build -> nginx
- |   |- index.html
- |   |- nginx.conf            try_files para o history mode
- |   |- package.json             axios, chart.js, vue-chartjs, pinia, vue-router
- |   |- tsconfig*.json
- |   \- vite.config.ts
- |- infra
- |   |- mosquitto
- |   |   \- config
- |   |       \- mosquitto.conf   listener 1883, allow_anonymous
- |   \- postgres                 (vazia)
- |- .env / .env.example
- |- docker-compose.yml           postgres + influx + mosquitto
- \- README.md                    problema, fluxo, como rodar
-```
+| Exchange | Tipo | Quem publica | Routing keys |
+| --- | --- | --- | --- |
+| `gg.telemetria` | topic | gateway | `telemetry.<zona>.<tipo>.<dispositivo>` |
+| `gg.comandos` | topic | api, regras | `cmd.<zona>.<tipo>.<dispositivo>` |
+| `gg.eventos` | topic | inferencia, regras, lab, api | `insight.*`, `alerta.*`, `acionamento.*`, `job.*`, `modelo.*` |
+| `gg.jobs` | direct | api | `gerar`, `treinar` |
+| `gg.dlx` | fanout | o próprio broker (e o gateway) | qualquer |
 
-## Decisoes registradas
+| Fila | Ligada em | Consumidor | Argumentos |
+| --- | --- | --- | --- |
+| `q.gravador` | `telemetry.#`, `insight.#` | gravador | DLX |
+| `q.inferencia` | `telemetry.*.exaustor.*` | inferencia | DLX |
+| `q.regras` | `telemetry.#` | regras | DLX |
+| `q.alertas` | `alerta.#` | regras | DLX |
+| `q.websocket` | `telemetry.#`, `#` (eventos), `cmd.#` | api | TTL 30 s, máx. 5000 (dado velho não interessa ao navegador) |
+| `q.comandos` | `cmd.#` | gateway | DLX, TTL 30 s (um "fechar válvula" de 10 min atrás não deve executar) |
+| `q.jobs.gerar` | `gerar` | lab | DLX |
+| `q.jobs.treinar` | `treinar` | lab | DLX |
+| `q.dlq` | `gg.dlx` | ninguém: a página Mensageria inspeciona | máx. 10000 |
 
-**Dispositivo desconhecido e descartado.** `processar_leitura()` confere o
-`codigo` contra o Postgres antes de gravar. Motivo: no Influx `codigo` e uma
-**tag**, e tag com valores ilimitados explode a cardinalidade do indice. Como
-o broker esta com `allow_anonymous true`, qualquer um pode publicar em
-`gasguard/QUALQUER-COISA/leitura`; sem a checagem, cada codigo inventado
-viraria uma serie nova e permanente.
+**Política de erro** (igual em todos, em `mensageria/conexao.py`): mensagem
+inválida → `reject` sem requeue → DLQ. Erro inesperado → devolve uma vez para
+a fila; se falhar de novo → DLQ. O broker move a mensagem para `gg.dlx` com o
+cabeçalho `x-death` (fila de origem, motivo, horário): a mensagem fica
+preservada.
 
-**A mesma checagem protege a query.** `ler_ultimas_leituras()` monta o Flux
-por interpolacao de string. `listar_historico()` valida o codigo no Postgres
-ANTES de consultar o Influx, entao um codigo arbitrario nunca chega na query.
+**Usuários** (gerados por `scripts/gerar_segredos.py`, sem `guest`):
 
-**Escrita sincrona no Influx.** `write_api` usa `SYNCHRONOUS` em vez do lote
-padrao: cada write vai na hora e levanta excecao se falhar. O padrao em lote
-engole erros silenciosamente.
+| Usuário | write (publica em) | read (consome de) |
+| --- | --- | --- |
+| `gg_api` (tag monitoring) | gg.comandos, gg.jobs, gg.eventos | q.websocket, q.dlq |
+| `gg_gateway` | gg.telemetria, gg.dlx | q.comandos |
+| `gg_gravador` | — | q.gravador |
+| `gg_regras` | gg.comandos, gg.eventos | q.regras, q.alertas |
+| `gg_inferencia` | gg.eventos | q.inferencia |
+| `gg_lab` | gg.eventos | q.jobs.gerar, q.jobs.treinar |
+| `gg_admin` (administrator) | tudo | tudo (só para a interface em 127.0.0.1) |
 
-**`enable_logger()` no cliente paho.** Excecao dentro de um callback do paho
-e capturada pela biblioteca e nao derruba o processo — mas some sem deixar
-rastro. Com o logger ligado, ela aparece no terminal com traceback.
+## MQTT
 
-**Exclusao de ambiente e fisica; de dispositivo e logica.** Dispositivo tem
-coluna `ativo` e o DELETE apenas a marca como falsa, preservando o historico
-no Influx. Ambiente nao tem `ativo`: o DELETE remove de verdade, e recusa com
-409 se houver dispositivos apontando para ele.
+| Tópico | Quem publica | Quem assina |
+| --- | --- | --- |
+| `gasguard/<codigo>/telemetria` | simulador | gateway |
+| `gasguard/<codigo>/comando` | gateway | simulador |
 
-## Notas
+Payload da telemetria: `{"codigo": "EXAUSTOR-01", "leituras": {"vibracao": 1.9, ...}, "estado": "ligado"}`.
+O Mosquitto não aceita anônimo; a ACL (`infra/mosquitto/config/acl`) dá a
+cada usuário só os tópicos de que ele precisa. O `gg_observador` só lê, para
+acompanhar o MQTT na apresentação.
 
-**`firmware/build`** e uma juncao (`mklink /J`) para `C:\pio-build\gasguard\esp32dev`.
-O toolchain xtensa nao escreve em caminhos com caracteres nao-ASCII (o "3o ano"
-deste repo), entao o PlatformIO gera o binario fora e a juncao o expoe dentro do
-workspace, que e onde a extensao do Wokwi exige que ele esteja. Nao e versionada:
-quem clonar o repo precisa recria-la.
+Comandos para o próprio simulador (injetar falha, vazamento, pausar, acelerar
+o relógio) vão para o dispositivo virtual `SIMULADOR`, pelo mesmo caminho.
 
-**Os cinco servicos estao no docker-compose:** postgres, influx, mosquitto,
-backend e frontend. `docker compose up --build -d` sobe tudo. Rodar backend e
-frontend na maquina host continua funcionando e e o modo recomendado para
-desenvolver, por causa do reload.
+## Cada banco com seu papel
 
-Tres detalhes que essa configuracao resolve:
+**PostgreSQL** (relacional, consistência, relações): `usuarios`,
+`ambientes`, `dispositivos`, `regras`, `alertas`, `jobs`, `modelos`,
+`configuracoes`, `auditoria`. Migrations com Alembic
+(`backend/alembic/versions/`). A auditoria só recebe INSERT.
 
-1. **Enderecos.** Dentro da rede do compose `localhost` e o proprio container.
-   O servico `backend` sobrescreve `DATABASE_URL`, `INFLUX_URL` e `MQTT_HOST`
-   com os nomes dos servicos. O `.env` continua com `localhost`, para o modo
-   host - o `load_dotenv` nao sobrepoe variavel que ja existe no ambiente,
-   entao o compose vence dentro do container.
+**InfluxDB** (série temporal, escrita contínua, consulta por período):
 
-2. **`VITE_API_URL` e build-time.** O Vite embute o valor no bundle. Quem
-   chama a API e o NAVEGADOR, que esta fora da rede do compose - por isso o
-   valor e `http://localhost:8000` e nao `http://backend:8000`. Trocar a URL
-   exige `docker compose build frontend`.
+| Bucket | Measurement | Tags | Fields |
+| --- | --- | --- | --- |
+| `sensores` | `telemetria` | dispositivo, tipo, zona | ppm, temperatura, vibracao, ..., estado, acionado |
+| `sensores` | `insights` | dispositivo, zona | saude, rul_horas, inclinacao_saude |
+| `lab` | `sintetico_exaustor` | dataset, equipamento, modo | vibracao, corrente, temperatura, rpm, saude, rul_horas |
+| `lab` | `sintetico_ambiente` | dataset, sensor, tipo | valor |
 
-3. **`connect_async` no paho.** O backend pode subir antes de o Mosquitto
-   aceitar conexao. Com `connect()` isso levantaria ConnectionRefusedError
-   dentro do lifespan e o container entraria em loop de restart;
-   `connect_async()` deixa a thread do loop conectar e reconectar sozinha,
-   com backoff de 1s a 30s.
+O dado sintético nunca vai para o bucket ao vivo. O dataset completo fica em
+arquivos `.npz` no volume `dados_lab`; no InfluxDB vai só uma amostra, para
+explorar na interface.
 
-O frontend tem tres rotas: `/` (painel), `/ambientes` e `/dispositivos`, as
-duas ultimas com CRUD completo consumindo as mesmas rotas da API. Os erros de
-dominio do backend chegam a tela pela `mensagemDeErro()` do `api/client.ts`,
-que trata os dois formatos que o FastAPI devolve: `detail` como string (404 e
-409) e como lista de objetos (422 da validacao do Pydantic).
+## IA
 
-O frontend e servido por nginx a partir do build estatico, com `try_files`
-apontando para o `index.html`: sem isso, F5 em qualquer rota que nao seja `/`
-daria 404 do nginx, porque o vue-router usa history mode e as rotas nao
-existem como arquivo.
+### O modelo físico (`comum/fisica.py`)
 
-**Postgres nao e exigido nesta etapa.** O PLAN.MD coloca banco relacional no
-2o bimestre. O CRUD existe porque o backend precisa saber quais dispositivos
-sao validos, mas nao pontua na 1a entrega.
+Um arquivo, dois usuários: o **simulador** (um instante por vez) e o
+**gerador** do Laboratório (meses de uma vez, em vetores do numpy). Assim o
+exaustor que a IA estuda é o mesmo que ela vê ao vivo.
 
-**O limiar de 2000 ppm esta duplicado** entre `firmware/src/sketch.ino`
-(`LIMITE_PPM`, alarme fisico) e `frontend/src/api/types.ts`
-(`LIMITE_CRITICO`, cor do painel). Mudar um exige mudar o outro. Unificar
-exigiria o firmware buscar configuracao pela rede, o que nao compensa agora.
+- Ciclo diário: o expediente (almoço e jantar) esquenta a cozinha e aumenta a
+  carga do exaustor; há estação do ano e dia/noite na luminosidade.
+- Cada exaustor tem uma "personalidade" (vibração, corrente e temperatura de
+  base diferentes): é isso que gera sobreposição entre saudáveis e doentes.
+- Modos de falha, cada um com assinatura própria nos 4 canais: rolamento
+  (vibração dispara), desbalanceamento (vibração sobe linear), entupimento do
+  filtro de gordura (**corrente cai**, rotação sobe, motor esquenta),
+  superaquecimento (temperatura dispara). E falhas de sensor (deriva,
+  travamento), em que a máquina está boa e quem mente é a medição.
+- Degradação progressiva: o dano cresce como `progresso^p` (p entre 1,6 e 2,6),
+  devagar no começo e rápido no fim, ao longo de 1 a 4 dias.
+
+### O gerador (`backend/app/lab/gerador.py`)
+
+Configurável pela página Laboratório: número de exaustores e de sensores de
+ambiente por tipo, dias, % que falha, modos, ruído, % faltantes, % absurdos e
+semente. Cada exaustor é um bloco vetorizado (nunca ponto a ponto), com um
+gerador aleatório próprio derivado da semente (reprodutível). Rótulos em toda
+linha: `saude`, `rul_horas` (teto de 96 h), `degradando`, `modo`. **Os rótulos
+nunca saem nas mensagens ao vivo**: o simulador conhece a saúde verdadeira mas
+só publica o que um sensor mediria. Teto de 30 milhões de leituras.
+
+### As features (`backend/app/ia/features.py`)
+
+Uma função, `calcular_features`, usada no treino **e** na inferência. Para
+cada um dos 4 canais: média curta (30 min), média longa (12 h), desvio e
+máximo (3 h), inclinação em 3 h e em 12 h, diferença curta − longa e o
+**afastamento da referência da própria máquina** (média das primeiras 24 h
+desde a instalação ou a última manutenção). 32 atributos.
+
+Tudo olha só para o passado: `rolling` termina na linha atual, faltante
+repete a última leitura válida, pico absurdo é comparado com a mediana das
+leituras **anteriores**. Nada usa a média da série inteira (que incluiria o
+futuro).
+
+A primeira versão não tinha a referência da máquina e perdeu para a base: o
+modelo decorou a temperatura média de cada exaustor do treino. Com a
+referência, ele passou a olhar a mudança, não o patamar.
+
+### O treino (`backend/app/ia/treino.py`)
+
+- **Divisão por equipamento**: 70% das máquinas no treino, 15% validação, 15%
+  teste, estratificado (as que falham e as que não falham divididas
+  separadamente). Nunca por linha: leituras vizinhas da mesma máquina são
+  quase iguais e inflariam a nota.
+- `HistGradientBoostingRegressor` com perda de erro absoluto, um para cada
+  alvo.
+- **Base simples**: `DummyRegressor` (sempre a média do treino). O modelo só
+  é ativado sozinho se vencer a base nos dois alvos.
+- Métricas MAE, RMSE e R² na validação, no teste e no teste só com máquinas
+  degradando; gráfico previsto × real; importância por permutação.
+- O arquivo vai para o volume `modelos` e os metadados para a tabela
+  `modelos`.
+
+### A inferência (`backend/app/servicos/inferencia.py`)
+
+- Guarda, por exaustor, as primeiras 288 leituras (a referência) e as últimas
+  144. Na última linha dessa tabela, `calcular_features` dá exatamente o que
+  daria com a história inteira.
+- A cada 5 s pergunta ao PostgreSQL qual versão está ativa. Mudou? Carrega o
+  arquivo novo e troca a referência: **sem reiniciar**. Cada insight leva a
+  versão do modelo.
+- Cada previsão passa por uma média móvel exponencial (a nova pesa 25%)
+  antes de ir para a tela e para os alertas: o ruído do sensor faz a
+  previsão de uma leitura oscilar alguns pontos. O valor bruto segue no
+  insight (`saude_bruta`, `rul_bruta`).
+- Alertas com histerese (`alertas/histerese.py`): 3 previsões seguidas abaixo
+  do limite abrem, 10 acima fecham. Limites e contagens na tabela
+  `configuracoes`, editáveis na página Regras e limites.
+- Motor desligado ou em falha: não há o que prever; publica o estado.
+- Ao reiniciar, retoma do banco os alertas que estavam abertos, para
+  conseguir fechá-los.
+
+## Tempo real
+
+- O navegador pede um **ticket** (`POST /api/ws/ticket`, com o JWT no
+  cabeçalho) e abre `/ws?ticket=...`. O ticket vale 30 s e uma vez só: o JWT
+  nunca vai na URL (onde vazaria para logs e histórico).
+- A API consome `q.websocket` e repassa a todos os navegadores. Quem conecta
+  recebe um snapshot com o último estado de cada dispositivo.
+- No frontend, o store `tempoReal` guarda os dados num objeto **sem
+  reatividade** (lido pela cena 3D a cada quadro) e só um contador reativo,
+  que sobe no máximo 4 vezes por segundo, para as telas comuns.
+
+## Gêmeo 3D (`frontend/src/cena/CenaCozinha.ts`)
+
+- A cena lê o store a cada quadro; mensagem nenhuma redesenha a cena.
+- Posições 3D só no frontend, indexadas pelo código do cadastro.
+  Dispositivo sem posição vai para a prateleira: todos aparecem.
+- Cor por estado (normal, atenção, crítico, sem dados) vinda da faixa do
+  sensor, dos alertas e da saúde prevista.
+- Ambiente reagindo a dados: dia e noite pela luminosidade, nuvem de gás
+  perto do chão pela concentração, partículas no cano e tamanho das chamas
+  pela vazão.
+- Exaustor gira pela rotação medida e treme mais quanto maior a vibração.
+  Válvula vira a alavanca; sirene pisca com luz vermelha.
+- O cano é uma lista de pontos que começa na saída do botijão e termina na
+  entrada do fogão, passando pelo centro do medidor de vazão e da válvula.
+- Piso, azulejos, nuvem de gás e partículas usam `InstancedMesh`.
+- Sem leitura por 8 s: animações param, tudo fica cinza e aparece o aviso.
+
+## Assistente
+
+- Ollama no compose, `llama3.2:3b` em CPU, `keep_alive = -1` e pré-carga pela
+  API ao subir.
+- O backend monta o contexto (`assistente/contexto.py`): instruções fixas e
+  arquitetura primeiro (o Ollama reaproveita esse começo entre perguntas),
+  depois os dados atuais. O LLM não tem ferramenta nenhuma.
+- Resposta em streaming (`StreamingResponse` → `fetch` + `ReadableStream`),
+  Markdown sem HTML e sem imagens, 5 perguntas por minuto por usuário, toda
+  pergunta na auditoria.
+
+## Segurança
+
+- JWT HS256 (8 h), três papéis; o frontend esconde botões, mas quem decide é
+  o backend (401/403).
+- bcrypt (12 rodadas); conta trava 5 min depois de 5 erros; no máximo 10
+  tentativas por minuto por IP; usuário inexistente gasta o mesmo tempo que
+  senha errada.
+- Segredos só no `.env` e em `secrets/`, gerados pelo script e ignorados pelo
+  Git. Senhas do RabbitMQ vão com hash no `definitions.json`; as do Mosquitto
+  viram hash no entrypoint.
+- Containers da aplicação com usuário sem privilégio (`gasguard`, uid 10001;
+  nginx-unprivileged). Só a porta 8080 da aplicação é publicada; interfaces
+  de administração só em 127.0.0.1.
+
+## Docker Compose
+
+Ordem: bancos e brokers ficam `healthy` → `migrador` roda Alembic e seed e
+termina → serviços Python (esperam o migrador e o RabbitMQ) → `simulador`
+(espera o gateway) → `frontend` (espera a API). Os serviços de fundo tocam
+um arquivo de batimento enquanto estão conectados; o healthcheck confere a
+idade dele.
+
+## Decisões registradas
+
+**Dispositivo desconhecido é barrado no gateway.** No InfluxDB, `dispositivo`
+é tag; tag com valores ilimitados explode a cardinalidade do índice. A
+mensagem vai para a DLQ com o motivo.
+
+**A consulta Flux só recebe código validado.** O histórico confere o código
+no PostgreSQL antes de montar a consulta por interpolação.
+
+**Escrita síncrona no InfluxDB.** O gravador só dá ack depois da escrita
+confirmada; o modo em lote da biblioteca engoliria erros.
+
+**Regra dispara na transição.** Senão mandaria o mesmo comando a cada leitura
+e brigaria com o operador que reabriu a válvula.
+
+**A válvula não reabre sozinha.** Depois de um corte por gás crítico, o
+rearme é manual, como em sistemas reais de segurança.
+
+**Exclusão de ambiente é física; de dispositivo é lógica.** Dispositivo
+desativado preserva o histórico no InfluxDB.
+
+**O ESP32 virou legado.** O enunciado da 2ª entrega pede dispositivo
+simulado em software. A pasta `firmware/` fica como registro do 1º bimestre.
