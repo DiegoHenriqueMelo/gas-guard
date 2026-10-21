@@ -13,6 +13,11 @@ def buscar_por_nome(db: Session, nome: str) -> Ambiente | None:
     return db.scalars(query).first()
 
 
+def buscar_por_zona(db: Session, zona: str) -> Ambiente | None:
+    query = select(Ambiente).where(Ambiente.zona == zona)
+    return db.scalars(query).first()
+
+
 def listar(db: Session) -> list[Ambiente]:
     query = select(Ambiente).order_by(Ambiente.id)
     return list(db.scalars(query).all())

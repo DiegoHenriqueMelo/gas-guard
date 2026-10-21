@@ -1,20 +1,14 @@
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-# o .env fica na raiz do projeto, quatro niveis acima deste arquivo
-load_dotenv(Path(__file__).resolve().parents[3] / ".env")
-
-DATABASE_URL = os.getenv("DATABASE_URL")
+from app.core.config import DATABASE_URL, SQL_ECHO
 
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL nao definida no .env")
+    raise RuntimeError("DATABASE_URL nao definida")
 
-# echo=True imprime todo SQL gerado - otimo para aprender, desligue depois
-engine = create_engine(DATABASE_URL, echo=True)
+# pool_pre_ping: testa a conexao antes de usar. Sem isto, depois que o
+# Postgres reinicia a primeira query de cada conexao velha do pool falha.
+engine = create_engine(DATABASE_URL, echo=SQL_ECHO, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 

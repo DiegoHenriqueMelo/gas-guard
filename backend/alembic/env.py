@@ -14,11 +14,10 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.database import Base, DATABASE_URL
 
-# NAO remova estes imports: sao eles que populam Base.metadata.
-# Todo model novo precisa entrar aqui, senao o autogenerate nao enxerga
-# a tabela e gera um DROP TABLE na migration.
-from app.ambientes.models import Ambiente  # noqa: F401
-from app.dispositivos.models import Dispositivo  # noqa: F401
+# NAO remova este import: e ele que popula Base.metadata com todas as
+# tabelas. Todo model novo precisa entrar em app/core/tabelas.py, senao o
+# autogenerate nao enxerga a tabela e gera um DROP TABLE na migration.
+import app.core.tabelas  # noqa: F401
 # ---------------------------------------------------------------------
 
 # this is the Alembic Config object, which provides

@@ -17,6 +17,9 @@ class Ambiente(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     nome: Mapped[str] = mapped_column(String(100), unique=True)
+    # Apelido curto e sem espacos, usado na routing key do RabbitMQ:
+    # telemetry.<zona>.<tipo>.<dispositivo>. Ex.: "cozinha".
+    zona: Mapped[str] = mapped_column(String(40), unique=True)
     descricao: Mapped[str | None] = mapped_column(String(255))
     criado_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
