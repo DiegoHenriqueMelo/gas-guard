@@ -1,0 +1,55 @@
+{
+  "_comentario": "Topologia do barramento interno. O scripts/gerar_segredos.py junta este arquivo com os usuarios (e senhas) de cada servico e grava secrets/rabbitmq/definitions.json, que o RabbitMQ carrega ao subir. Os servicos NAO declaram nada: so leem e escrevem no que esta aqui.",
+  "vhosts": [{ "name": "gasguard" }],
+  "exchanges": [
+    { "name": "gg.telemetria", "vhost": "gasguard", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "gg.comandos", "vhost": "gasguard", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "gg.eventos", "vhost": "gasguard", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "gg.jobs", "vhost": "gasguard", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "gg.dlx", "vhost": "gasguard", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+  "queues": [
+    { "name": "q.gravador", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.inferencia", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.regras", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.alertas", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.websocket", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-message-ttl": 30000, "x-max-length": 5000, "x-overflow": "drop-head" } },
+    { "name": "q.comandos", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx", "x-message-ttl": 30000 } },
+    { "name": "q.jobs.gerar", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.jobs.treinar", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-dead-letter-exchange": "gg.dlx" } },
+    { "name": "q.dlq", "vhost": "gasguard", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "classic", "x-max-length": 10000 } }
+  ],
+  "bindings": [
+    { "source": "gg.telemetria", "vhost": "gasguard", "destination": "q.gravador", "destination_type": "queue", "routing_key": "telemetry.#", "arguments": {} },
+    { "source": "gg.eventos", "vhost": "gasguard", "destination": "q.gravador", "destination_type": "queue", "routing_key": "insight.#", "arguments": {} },
+    { "source": "gg.telemetria", "vhost": "gasguard", "destination": "q.inferencia", "destination_type": "queue", "routing_key": "telemetry.*.exaustor.*", "arguments": {} },
+    { "source": "gg.telemetria", "vhost": "gasguard", "destination": "q.regras", "destination_type": "queue", "routing_key": "telemetry.#", "arguments": {} },
+    { "source": "gg.eventos", "vhost": "gasguard", "destination": "q.alertas", "destination_type": "queue", "routing_key": "alerta.#", "arguments": {} },
+    { "source": "gg.telemetria", "vhost": "gasguard", "destination": "q.websocket", "destination_type": "queue", "routing_key": "telemetry.#", "arguments": {} },
+    { "source": "gg.eventos", "vhost": "gasguard", "destination": "q.websocket", "destination_type": "queue", "routing_key": "#", "arguments": {} },
+    { "source": "gg.comandos", "vhost": "gasguard", "destination": "q.websocket", "destination_type": "queue", "routing_key": "cmd.#", "arguments": {} },
+    { "source": "gg.comandos", "vhost": "gasguard", "destination": "q.comandos", "destination_type": "queue", "routing_key": "cmd.#", "arguments": {} },
+    { "source": "gg.jobs", "vhost": "gasguard", "destination": "q.jobs.gerar", "destination_type": "queue", "routing_key": "gerar", "arguments": {} },
+    { "source": "gg.jobs", "vhost": "gasguard", "destination": "q.jobs.treinar", "destination_type": "queue", "routing_key": "treinar", "arguments": {} },
+    { "source": "gg.dlx", "vhost": "gasguard", "destination": "q.dlq", "destination_type": "queue", "routing_key": "", "arguments": {} }
+  ],
+  "_permissoes": "Cada servico com o minimo de que precisa. configure vazio (^$): ninguem cria, apaga ou muda fila/exchange; a topologia so muda por este arquivo. write = em quais exchanges publica; read = de quais filas consome.",
+  "servicos": {
+    "gg_api":        { "tags": ["monitoring"], "configure": "^$", "write": "^(gg\\.comandos|gg\\.jobs|gg\\.eventos)$", "read": "^(q\\.websocket|q\\.dlq)$" },
+    "gg_gateway":    { "tags": [], "configure": "^$", "write": "^(gg\\.telemetria|gg\\.dlx)$", "read": "^q\\.comandos$" },
+    "gg_gravador":   { "tags": [], "configure": "^$", "write": "^$", "read": "^q\\.gravador$" },
+    "gg_regras":     { "tags": [], "configure": "^$", "write": "^(gg\\.comandos|gg\\.eventos)$", "read": "^(q\\.regras|q\\.alertas)$" },
+    "gg_inferencia": { "tags": [], "configure": "^$", "write": "^gg\\.eventos$", "read": "^q\\.inferencia$" },
+    "gg_lab":        { "tags": [], "configure": "^$", "write": "^gg\\.eventos$", "read": "^q\\.jobs\\.(gerar|treinar)$" },
+    "gg_admin":      { "tags": ["administrator"], "configure": ".*", "write": ".*", "read": ".*" }
+  }
+}
