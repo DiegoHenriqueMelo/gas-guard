@@ -200,7 +200,9 @@ referência, ele passou a olhar a mudança, não o patamar.
   previsão de uma leitura oscilar alguns pontos. O valor bruto segue no
   insight (`saude_bruta`, `rul_bruta`).
 - Alertas com histerese (`alertas/histerese.py`): 3 previsões seguidas abaixo
-  do limite abrem, 10 acima fecham. Limites e contagens na tabela
+  do limite abrem; para fechar, 10 seguidas acima do limite **mais uma margem**
+  (5 pontos de saúde, 6 h de vida útil), a faixa morta que impede o alerta de
+  piscar com o valor rondando o limite. Limites e contagens na tabela
   `configuracoes`, editáveis na página Regras e limites.
 - Motor desligado ou em falha: não há o que prever; publica o estado.
 - Ao reiniciar, retoma do banco os alertas que estavam abertos, para

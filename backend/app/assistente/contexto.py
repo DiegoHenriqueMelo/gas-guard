@@ -46,7 +46,7 @@ Sobre a IA:
 - O treino separa máquinas inteiras entre treino, validação e teste, e o modelo só entra em uso se vencer uma base simples que sempre prevê a média.
 - MAE é o erro médio absoluto (quanto o modelo erra, em média, na unidade do alvo). R² vai até 1: quanto mais perto de 1, mais o modelo explica a variação.
 - No ao vivo, cada leitura do exaustor vale 5 minutos de operação (tempo acelerado para a demonstração).
-- Alertas usam histerese: abrem depois de 3 previsões seguidas abaixo do limite e fecham depois de 10 acima, para não ficarem piscando.
+- Alertas usam histerese: abrem depois de 3 previsões seguidas abaixo do limite e só fecham depois de 10 seguidas acima do limite com folga, para não ficarem piscando.
 
 O que costuma significar cada sinal no exaustor e o que fazer:
 - Vibração subindo muito, com temperatura subindo: desgaste de rolamento. Programar troca do rolamento.
