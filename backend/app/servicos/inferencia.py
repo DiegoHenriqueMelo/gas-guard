@@ -17,8 +17,9 @@ bruto continua no insight (saude_bruta, rul_bruta), para comparar.
 
 Alertas com histerese (configuraveis na tabela `configuracoes`):
   ia_saude: abre com 3 previsoes seguidas abaixo de 60 (atencao) ou 30
-            (critico); fecha com 10 seguidas acima.
-  ia_rul:   o mesmo, com vida util abaixo de 48 h (atencao) ou 12 h.
+            (critico); fecha com 10 seguidas acima de 65 (limite + margem).
+  ia_rul:   o mesmo, com vida util abaixo de 48 h (atencao) ou 12 h, e
+            margem de 6 h para fechar.
 """
 
 import asyncio
@@ -59,6 +60,11 @@ PADROES = {
 }
 PONTOS_TENDENCIA = 30  # previsoes usadas para medir se a saude esta caindo
 SUAVIZACAO = 0.25      # peso da previsao nova na media movel exponencial
+# Faixa morta da histerese: com o alerta aberto, o valor precisa passar do
+# limite COM folga para contar como "bom". Sem ela, um valor rondando 60-62
+# fecharia e reabriria o alerta.
+MARGEM_SAUDE = 5.0     # pontos
+MARGEM_RUL = 6.0       # horas
 AVISO_PARADO = 10.0    # segundos entre insights de "equipamento parado"
 
 
@@ -122,10 +128,15 @@ def tendencia(saudes: deque) -> tuple[str, float]:
     return "estavel", por_hora
 
 
-def severidade(valor: float, atencao: float, critico: float) -> str | None:
-    if valor < critico:
+def severidade(
+    valor: float, atencao: float, critico: float, ativo: str | None = None, margem: float = 0.0
+) -> str | None:
+    """Severidade desta previsao. Com alerta aberto, os limites sobem pela
+    margem: para sair de "critico" e preciso passar de critico + margem, e
+    para sair de "atencao", de atencao + margem."""
+    if valor < critico + (margem if ativo == "critico" else 0.0):
         return "critico"
-    if valor < atencao:
+    if valor < atencao + (margem if ativo in ("atencao", "critico") else 0.0):
         return "atencao"
     return None
 
@@ -242,7 +253,8 @@ async def principal(parar: asyncio.Event) -> None:
         rumo, inclinacao = tendencia(maquina.saudes)
 
         mudanca = maquina.histerese_saude.avaliar(
-            severidade(saude, limites["ia_saude_atencao"], limites["ia_saude_critico"])
+            severidade(saude, limites["ia_saude_atencao"], limites["ia_saude_critico"],
+                       maquina.histerese_saude.ativo, MARGEM_SAUDE)
         )
         if mudanca:
             await publicar_alerta(
@@ -250,7 +262,8 @@ async def principal(parar: asyncio.Event) -> None:
                 f"Saúde prevista em {saude:.0f}/100 (modelo {registro.versao})", saude,
             )
         mudanca = maquina.histerese_rul.avaliar(
-            severidade(rul, limites["ia_rul_atencao_h"], limites["ia_rul_critico_h"])
+            severidade(rul, limites["ia_rul_atencao_h"], limites["ia_rul_critico_h"],
+                       maquina.histerese_rul.ativo, MARGEM_RUL)
         )
         if mudanca:
             await publicar_alerta(
