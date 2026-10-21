@@ -1,30 +1,79 @@
+# Gas-Guard - sobe tudo com um comando:
+#
+#     python scripts/gerar_segredos.py     (so na primeira vez)
+#     docker compose up -d --build
+#
+# Painel: http://localhost:8080  (a UNICA porta publicada para a aplicacao)
+# Interfaces de administracao, so na maquina local (127.0.0.1):
+#   RabbitMQ http://127.0.0.1:15672 | InfluxDB http://127.0.0.1:8086
+#   Adminer (PostgreSQL) http://127.0.0.1:8081 | MQTT 127.0.0.1:1883
+#
+# Ordem de subida: bancos e brokers -> migrador (cria tabelas e dados
+# iniciais e sai) -> servicos Python -> simulador -> frontend. Cada etapa
+# espera a anterior ficar "healthy", nao so "iniciada".
+
+# ---------------------------------------------------------------------------
+# Pedacos repetidos (ancoras YAML). "<<: *nome" cola o bloco no lugar.
+# ---------------------------------------------------------------------------
+x-backend-env: &backend-env
+  TZ: America/Sao_Paulo
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  INFLUX_URL: http://influx:8086
+  INFLUX_TOKEN: ${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+  INFLUX_ORG: ${DOCKER_INFLUXDB_INIT_ORG}
+  INFLUX_BUCKET: ${DOCKER_INFLUXDB_INIT_BUCKET}
+  INFLUX_BUCKET_LAB: lab
+  RABBIT_HOST: rabbitmq
+  RABBIT_VHOST: gasguard
+  RABBIT_GESTAO_URL: http://rabbitmq:15672
+  DIR_DADOS: /dados
+  DIR_MODELOS: /modelos
+
+# Servico de fundo: mesma imagem do backend, outro comando. O healthcheck
+# confere o arquivo de batimento que o servico toca enquanto esta conectado.
+x-servico: &servico
+  image: gasguard/backend:2
+  pull_policy: never
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "python", "-m", "app.servicos.saude"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 20s
+
+x-depende-do-banco: &depende-do-banco
+  migrador:
+    condition: service_completed_successfully
+  rabbitmq:
+    condition: service_healthy
+
 services:
+
+  # ======================= bancos e brokers =======================
 
   postgres:
     image: postgres:17-alpine
-    container_name: gasguard-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      DATABASE_URL: ${DATABASE_URL}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   influx:
     image: influxdb:2.7-alpine
-    container_name: gasguard-influx
     restart: unless-stopped
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     volumes:
       - influx_data:/var/lib/influxdb2
     environment:
@@ -34,66 +83,258 @@ services:
       DOCKER_INFLUXDB_INIT_ORG: ${DOCKER_INFLUXDB_INIT_ORG}
       DOCKER_INFLUXDB_INIT_BUCKET: ${DOCKER_INFLUXDB_INIT_BUCKET}
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   mosquitto:
-    image: eclipse-mosquitto:2.0
-    container_name: gasguard-mosquitto
+    image: eclipse-mosquitto:2.0.22
     restart: unless-stopped
+    # o entrypoint gera o arquivo de senhas a partir do .env antes de subir
+    entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
+    environment:
+      MQTT_SIMULADOR_SENHA: ${MQTT_SIMULADOR_SENHA}
+      MQTT_GATEWAY_SENHA: ${MQTT_GATEWAY_SENHA}
+      MQTT_OBSERVADOR_SENHA: ${MQTT_OBSERVADOR_SENHA}
     ports:
-      - "1883:1883"
+      # para acompanhar o MQTT com mosquitto_sub/MQTT Explorer (usuario
+      # gg_observador, so leitura)
+      - "127.0.0.1:1883:1883"
     volumes:
-      - ./infra/mosquitto/config:/mosquitto/config
+      - ./infra/mosquitto/config:/mosquitto/config:ro
+      - ./infra/mosquitto/entrypoint.sh:/mosquitto/entrypoint.sh:ro
       - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -u gg_observador -P \"$$MQTT_OBSERVADOR_SENHA\" -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-  backend:
-    build: ./backend
-    container_name: gasguard-backend
+  rabbitmq:
+    image: rabbitmq:4.1.8-management-alpine
     restart: unless-stopped
+    # o RabbitMQ guarda os dados numa pasta com o nome do no; nome fixo faz
+    # o volume continuar valendo quando o container e recriado
+    hostname: rabbitmq
     ports:
-      - "8000:8000"
+      - "127.0.0.1:15672:15672"   # interface de gerenciamento (gg_admin)
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-gasguard.conf:ro
+      - ./secrets/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ======================= LLM local =======================
+
+  ollama:
+    image: ollama/ollama:0.40.6
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"         # modelo nunca sai da memoria
+      OLLAMA_NUM_PARALLEL: "1"        # uma resposta por vez: CPU nao da para mais
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  # Baixa o modelo na primeira subida (~2 GB) e sai. Nas proximas, o modelo
+  # ja esta no volume e isto termina em segundos.
+  ollama-init:
+    image: ollama/ollama:0.40.6
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c", "ollama pull \"$$OLLAMA_MODELO\""]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODELO: ${OLLAMA_MODELO:-llama3.2:3b}
     depends_on:
-      # o container roda `alembic upgrade head` antes de servir, entao o
-      # Postgres precisa estar ACEITANDO CONEXAO, nao apenas iniciado.
+      ollama:
+        condition: service_healthy
+
+  # ======================= backend (uma imagem, varios servicos) =======================
+
+  # Roda as migrations e o seed e termina. Todo o resto espera ele acabar.
+  migrador:
+    build:
+      context: ./backend
+      additional_contexts:
+        comum: ./comum
+    image: gasguard/backend:2
+    restart: "no"
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
+    environment:
+      <<: *backend-env
+      DEMO_SENHA_ADMINISTRADOR: ${DEMO_SENHA_ADMINISTRADOR}
+      DEMO_SENHA_OPERADOR: ${DEMO_SENHA_OPERADOR}
+      DEMO_SENHA_VISUALIZADOR: ${DEMO_SENHA_VISUALIZADOR}
+    depends_on:
       postgres:
         condition: service_healthy
-      influx:
-        condition: service_started
-      mosquitto:
-        condition: service_started
+
+  api:
+    image: gasguard/backend:2
+    pull_policy: never
+    restart: unless-stopped
     environment:
-      # Dentro da rede do compose, "localhost" e o proprio container.
-      # Os enderecos viram os NOMES DOS SERVICOS acima. Estes valores
-      # sobrescrevem os do .env, que servem para rodar na maquina host
-      # (o load_dotenv nao sobrepoe variavel que ja existe no ambiente).
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      INFLUX_URL: http://influx:8086
-      INFLUX_TOKEN: ${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
-      INFLUX_ORG: ${DOCKER_INFLUXDB_INIT_ORG}
-      INFLUX_BUCKET: ${DOCKER_INFLUXDB_INIT_BUCKET}
+      <<: *backend-env
+      RABBIT_USUARIO: gg_api
+      RABBIT_SENHA: ${RABBIT_SENHA_API}
+      JWT_SEGREDO: ${JWT_SEGREDO}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODELO: ${OLLAMA_MODELO:-llama3.2:3b}
+    depends_on:
+      <<: *depende-do-banco
+      influx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/saude', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  gateway:
+    <<: *servico
+    command: ["python", "-m", "app.servicos.gateway"]
+    environment:
+      <<: *backend-env
+      RABBIT_USUARIO: gg_gateway
+      RABBIT_SENHA: ${RABBIT_SENHA_GATEWAY}
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
-      MQTT_TOPIC: gasguard/+/leitura
+      MQTT_USUARIO: gg_gateway
+      MQTT_SENHA: ${MQTT_GATEWAY_SENHA}
+    depends_on:
+      <<: *depende-do-banco
+      mosquitto:
+        condition: service_healthy
+
+  gravador:
+    <<: *servico
+    command: ["python", "-m", "app.servicos.gravador"]
+    environment:
+      <<: *backend-env
+      RABBIT_USUARIO: gg_gravador
+      RABBIT_SENHA: ${RABBIT_SENHA_GRAVADOR}
+    depends_on:
+      <<: *depende-do-banco
+      influx:
+        condition: service_healthy
+
+  regras:
+    <<: *servico
+    command: ["python", "-m", "app.servicos.regras"]
+    environment:
+      <<: *backend-env
+      RABBIT_USUARIO: gg_regras
+      RABBIT_SENHA: ${RABBIT_SENHA_REGRAS}
+    depends_on:
+      <<: *depende-do-banco
+
+  inferencia:
+    <<: *servico
+    command: ["python", "-m", "app.servicos.inferencia"]
+    environment:
+      <<: *backend-env
+      RABBIT_USUARIO: gg_inferencia
+      RABBIT_SENHA: ${RABBIT_SENHA_INFERENCIA}
+    volumes:
+      - modelos:/modelos:ro          # so le: quem grava modelo e o lab
+    depends_on:
+      <<: *depende-do-banco
+
+  lab:
+    <<: *servico
+    command: ["python", "-m", "app.servicos.lab"]
+    environment:
+      <<: *backend-env
+      RABBIT_USUARIO: gg_lab
+      RABBIT_SENHA: ${RABBIT_SENHA_LAB}
+      LAB_MAX_LEITURAS: "30000000"
+    volumes:
+      - dados_lab:/dados
+      - modelos:/modelos
+    depends_on:
+      <<: *depende-do-banco
+      influx:
+        condition: service_healthy
+
+  # ======================= dispositivo =======================
+
+  simulador:
+    build:
+      context: ./simulador
+      additional_contexts:
+        comum: ./comum
+    image: gasguard/simulador:2
+    restart: unless-stopped
+    environment:
+      TZ: America/Sao_Paulo
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USUARIO: gg_simulador
+      MQTT_SENHA: ${MQTT_SIMULADOR_SENHA}
+      INTERVALO: "2"
+      FATOR_RELOGIO: "1"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      # so comeca a publicar quando o gateway ja esta ouvindo
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/tmp/vivo')<30 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ======================= interface =======================
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        # Embutido no bundle em tempo de build. E o navegador do usuario que
-        # chama a API, e ele esta FORA da rede do compose - por isso a porta
-        # publicada do host, e nao "http://backend:8000".
-        VITE_API_URL: http://localhost:8000
-    container_name: gasguard-frontend
+    build: ./frontend
+    image: gasguard/frontend:2
     restart: unless-stopped
     ports:
-      # 5173 no host de proposito: e a origem ja liberada no CORSMiddleware
-      # do backend. Dentro do container o nginx escuta na 80.
-      - "5173:80"
+      # a unica porta da APLICACAO aberta para fora. O nginx deste container
+      # serve o Vue e repassa /api e /ws para a API, que nao tem porta propria.
+      - "8080:8080"
     depends_on:
-      - backend
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Interface web do PostgreSQL para explorar os dados em aula.
+  adminer:
+    image: adminer:5.5.1-standalone
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   influx_data:
   mosquitto_data:
-  mosquitto_log:
+  rabbitmq_data:
+  ollama_data:
+  dados_lab:
+  modelos:
