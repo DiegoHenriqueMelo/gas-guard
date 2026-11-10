@@ -30,7 +30,7 @@ class InjetarFalha(BaseModel):
     equipamento: str = "EXAUSTOR-01"
     modo: Literal[MODOS_FALHA] = "rolamento"  # type: ignore[valid-type]
     # horas de OPERACAO ate a falha (1 leitura ao vivo = 5 min de operacao,
-    # entao 20 h passam em ~5 min de apresentacao). Fica dentro do que o
+    # entao 20 h = 240 leituras = 8 min de apresentacao). Fica dentro do que o
     # Laboratorio gera (1 a 4 dias de degradacao), senao o modelo ve ao vivo
     # um desgaste mais rapido do que qualquer um que estudou.
     horas_ate_falha: float = Field(default=20.0, ge=1, le=96)

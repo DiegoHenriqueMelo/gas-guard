@@ -192,7 +192,7 @@ async function simular(comando: Record<string, unknown>, texto: string): Promise
           </button>
         </div>
         <p class="aviso">
-          {{ horas }} h de operação passam em cerca de {{ Math.round((horas * 12 * 0.65 * 2) / 60) }} min de apresentação.
+          {{ horas }} h de operação passam em cerca de {{ Math.round((horas * 12 * 2) / 60) }} min de apresentação (cada leitura, a cada 2 s, vale 5 min).
           O simulador nunca publica a saúde verdadeira: quem a descobre é o modelo, pelas leituras.
           <span v-if="retorno"><br />{{ retorno }}</span>
         </p>
