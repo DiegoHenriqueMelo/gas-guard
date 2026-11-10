@@ -239,7 +239,9 @@ As senhas são aleatórias, geradas pelo script, e ficam em
 ## Roteiro da demonstração
 
 O passo a passo completo, com o que mostrar e o que falar em cada etapa, está
-em [`docs/ROTEIRO.MD`](docs/ROTEIRO.MD). Em resumo, na ordem pedida:
+em [`docs/ROTEIRO.MD`](docs/ROTEIRO.MD). Para estudar antes, o mesmo roteiro
+em versão de teste guiado (o que conferir em cada passo, o que acontece por
+baixo e onde está no código) está em [`docs/TESTE-GUIADO.MD`](docs/TESTE-GUIADO.MD). Em resumo, na ordem pedida:
 
 1. `docker compose up -d --build` e `docker compose ps` com tudo saudável.
 2. Login com os três papéis (o visualizador não vê botões; a API devolve 403).
