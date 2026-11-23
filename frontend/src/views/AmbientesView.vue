@@ -10,6 +10,9 @@ import {
 } from '../api/client'
 import type { Ambiente } from '../api/types'
 import ModalConfirmacao from '../components/ModalConfirmacao.vue'
+import { useAuth } from '../stores/auth'
+
+const auth = useAuth()
 
 const ambientes = ref<Ambiente[]>([])
 const carregando = ref(true)
@@ -24,17 +27,20 @@ const paraExcluir = ref<Ambiente | null>(null)
 // null = o formulario esta em modo de criacao.
 const editandoId = ref<number | null>(null)
 const nome = ref('')
+const zona = ref('')
 const descricao = ref('')
 
 function limparFormulario(): void {
   editandoId.value = null
   nome.value = ''
+  zona.value = ''
   descricao.value = ''
 }
 
 function prepararEdicao(ambiente: Ambiente): void {
   editandoId.value = ambiente.id
   nome.value = ambiente.nome
+  zona.value = ambiente.zona
   descricao.value = ambiente.descricao ?? ''
   erro.value = null
   aviso.value = null
@@ -63,14 +69,17 @@ async function salvar(): Promise<void> {
 
   try {
     if (editandoId.value === null) {
+      // zona vazia: o backend gera a partir do nome ("Cozinha 2" -> "cozinha-2")
       const novo = await criarAmbiente({
         nome: nome.value.trim(),
+        zona: zona.value.trim() || null,
         descricao: descricaoLimpa,
       })
       aviso.value = `Ambiente "${novo.nome}" criado.`
     } else {
       const alterado = await editarAmbiente(editandoId.value, {
         nome: nome.value.trim(),
+        zona: zona.value.trim() || undefined,
         descricao: descricaoLimpa,
       })
       aviso.value = `Ambiente "${alterado.nome}" atualizado.`
@@ -118,7 +127,10 @@ onMounted(carregar)
 
 <template>
   <div class="pagina">
-    <section class="gg-cartao">
+    <p v-if="!auth.pode('administrador')" class="gg-alerta gg-alerta--ok">
+      Cadastro e edição de ambientes são feitos pelo administrador.
+    </p>
+    <section v-else class="gg-cartao">
       <h2 class="gg-titulo">
         {{ editandoId === null ? 'Novo ambiente' : `Editando ambiente #${editandoId}` }}
       </h2>
@@ -136,6 +148,17 @@ onMounted(carregar)
               required
               maxlength="100"
               placeholder="Cozinha industrial"
+            />
+          </label>
+
+          <label class="gg-campo">
+            <span>Zona (routing key)</span>
+            <input
+              v-model="zona"
+              class="gg-input"
+              maxlength="40"
+              pattern="[a-z0-9\-]{2,40}"
+              placeholder="gerada a partir do nome"
             />
           </label>
 
@@ -185,6 +208,7 @@ onMounted(carregar)
             <tr>
               <th>#</th>
               <th>Nome</th>
+              <th>Zona</th>
               <th>Descrição</th>
               <th>Criado em</th>
               <th></th>
@@ -194,10 +218,11 @@ onMounted(carregar)
             <tr v-for="ambiente in ambientes" :key="ambiente.id">
               <td class="gg-num">{{ ambiente.id }}</td>
               <td>{{ ambiente.nome }}</td>
+              <td><code>{{ ambiente.zona }}</code></td>
               <td>{{ ambiente.descricao ?? '—' }}</td>
               <td class="gg-num">{{ formatarData(ambiente.criado_em) }}</td>
               <td>
-                <div class="linha-acoes">
+                <div v-if="auth.pode('administrador')" class="linha-acoes">
                   <button
                     class="gg-btn gg-btn--mini"
                     @click="prepararEdicao(ambiente)"

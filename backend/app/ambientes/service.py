@@ -5,17 +5,24 @@ from app.ambientes.exceptions import (
     AmbienteNaoEncontrado,
     AmbientePossuiDispositivos,
     NomeJaCadastrado,
+    ZonaJaCadastrada,
 )
 from app.ambientes.models import Ambiente
 from app.ambientes.schemas import AmbienteCreate, AmbienteRead, AmbienteUpdate
+from app.core.texto import slug
 
 
 def criar_ambiente(db: Session, dados: AmbienteCreate) -> Ambiente:
     if repository.buscar_por_nome(db, dados.nome) is not None:
         raise NomeJaCadastrado()
 
+    zona = dados.zona or slug(dados.nome)
+    if repository.buscar_por_zona(db, zona) is not None:
+        raise ZonaJaCadastrada()
+
     ambiente = Ambiente(
         nome=dados.nome,
+        zona=zona,
         descricao=dados.descricao,
     )
 
@@ -45,6 +52,11 @@ def editar_ambiente(db: Session, ambiente_id: int, dados: AmbienteUpdate) -> Amb
         outro = repository.buscar_por_nome(db, campos["nome"])
         if outro is not None and outro.id != ambiente.id:
             raise NomeJaCadastrado()
+
+    if "zona" in campos:
+        outro = repository.buscar_por_zona(db, campos["zona"])
+        if outro is not None and outro.id != ambiente.id:
+            raise ZonaJaCadastrada()
 
     return repository.editar(db, ambiente, campos)
 

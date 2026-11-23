@@ -1,0 +1,17 @@
+# Permissoes por topico. "+" casa com um nivel (o codigo do dispositivo).
+# Topico que nao aparece aqui e proibido para o usuario.
+
+# O simulador e o "dispositivo": publica leituras e escuta comandos.
+user gg_simulador
+topic write gasguard/+/telemetria
+topic read gasguard/+/comando
+
+# O gateway faz o contrario: le as leituras e publica os comandos.
+user gg_gateway
+topic read gasguard/+/telemetria
+topic write gasguard/+/comando
+
+# Para a turma acompanhar o MQTT (mosquitto_sub, MQTT Explorer): so leitura.
+user gg_observador
+topic read gasguard/#
+topic read $SYS/#
